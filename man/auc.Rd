@@ -36,6 +36,9 @@ values of test_1 and test_2 are correlated with the positive gold standard
 (status = TRUE)
 }
 \examples{
+
+library(fastAUC)
+
 n_obs <- 10000
 n_clust <- 100
 

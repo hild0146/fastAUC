@@ -36,6 +36,9 @@
 #'
 #'
 #' @examples
+#'
+#' library(fastAUC)
+#'
 #' n_obs <- 10000
 #' n_clust <- 100
 #'
