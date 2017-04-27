@@ -212,16 +212,16 @@ auc <- function(test_1,
     test.stat <- abs(out$auc[1] - out$auc[2]) / sqrt(sum(out$var) - 2 * cov.auc)
     p.value <- 2 * pnorm(test.stat, lower.tail = F)
 
-    out.return <- list('auc' = out$auc,
-                       'var' = matrix(c(out$var[1],
-                                        rep(cov.auc, 2),
-                                        out$var[2]),
-                                      nrow = 2),
-                       'test_stat' = test.stat,
-                       'p_value' = p.value)
+    out.return <- list(auc = out$auc,
+                       var = matrix(c(out$var[1],
+                                      rep(cov.auc, 2),
+                                      out$var[2]),
+                                    nrow = 2),
+                       test_stat = test.stat,
+                       p_value = p.value)
 
     return(out.return)
 
-  } else return(out[ ,c('auc', 'var')])
+  } else return(list(auc = out$auc, var = out$var))
 
 }
