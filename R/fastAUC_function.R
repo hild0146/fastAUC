@@ -68,49 +68,34 @@ auc <- function(test_1,
 
   # -- define dataset of interest
 
-  if(is.null(cluster)){
-    if(n_test == 1){
-      dta <- data_frame(test_1, status)
-    } else {
-      dta <- data_frame(test_1, test_2, status)
-    }
-  } else {
-    if(n_test == 1){
-      dta <- data_frame(test_1, status, cluster)
-    } else {
-      dta <- data_frame(test_1, test_2, status, cluster)
-    }
-  }
+  dta <- data_frame(test_1, status)
+
+  if(!is.null(test_1)) dta$test_2 <- test_2
+  if(!is.null(cluster)) dta$cluster <- cluster
 
   dta <- na.omit(dta)
+  dta$obs_num <- 1:nrow(dta)
 
-  # assigning each observation to its own cluster will result in the
-  # delong variance estimates
-  if(is.null(cluster)){
-    dta <- mutate(dta, cluster = 1:n())
-  }
-
-  n_cluster_tot <- n_distinct(dta$cluster)
-  n_cluster_pos <- n_distinct(dta$cluster[dta$status == T])
-  n_cluster_neg <- n_distinct(dta$cluster[dta$status == F])
   n_pos <- sum(dta$status == T)
   n_neg <- sum(dta$status == F)
 
+  if(!is.null(cluster)){
+    n_cluster_tot <- n_distinct(dta$cluster)
+    n_cluster_pos <- n_distinct(dta$cluster[dta$status == T])
+    n_cluster_neg <- n_distinct(dta$cluster[dta$status == F])
+  }
+
 
   # -- compute auc & variance estimates for each test
-
   for(test_i in 1:n_test) {
     if(test_i == 1) {
-      out <- data_frame('test' = c(1, 2)[1:n_test],
+      out <- data_frame('test' = (1:2)[1:n_test],
                         'auc' = NA,
                         'var' = NA)
     }
 
-    if(test_i == 1){
-      dta$test_i <- dta$test_1
-    }  else {
+    if(test_i == 1) dta$test_i <- dta$test_1 else
       dta$test_i <- dta$test_2
-    }
 
     # must be sorted prior to calling C++ code
     dta_i <- arrange(dta, test_i)
@@ -122,108 +107,140 @@ auc <- function(test_1,
 
     out$auc[test_i] <- auc
 
-    v_values <- dta_i %>%
-      group_by(status, cluster) %>%
-      summarize(cnt = n(),
-                kern_sum = sum(kern_sum)) %>%
-      ungroup %>%
-      mutate(v = ifelse(status == T,
-                        kern_sum / n_neg,
-                        kern_sum / n_pos))
 
-    s_values <- v_values %>%
-      group_by(status) %>%
-      summarize(s = sum( (v - cnt * auc) ^ 2))  %>%
-      mutate(s = ifelse(status == T,
-                        n_cluster_pos / ((n_cluster_pos - 1) * n_pos) * s,
-                        n_cluster_neg / ((n_cluster_neg - 1) * n_neg) * s))
+    if(is.null(cluster)){
 
-    s_10 <- s_values %>%
-      filter(status == T) %>%
-      select(s) %>%
-      as.numeric
+      v_values <- dta_i %>%
+        arrange(obs_num) %>%
+        mutate(v = ifelse(status == T,
+                          kern_sum / n_neg,
+                          kern_sum / n_pos))
 
-    s_01 <- s_values %>%
-      filter(status == F) %>%
-      select(s) %>%
-      as.numeric
+      s_values <- v_values %>%
+        group_by(status) %>%
+        summarize(s = sum( (v - auc) ^ 2))  %>%
+        ungroup %>%
+        mutate(s = ifelse(status == T,
+                          s / (n_pos - 1) / n_pos,
+                          s / (n_neg - 1) / n_neg))
 
-    s_cross <- v_values %>%
-      mutate(s = v - cnt * auc)
-
-    s_11 <- inner_join(select(filter(s_cross, status == T), cluster, s),
-                       select(filter(s_cross, status == F), cluster, s),
-                       by = c('cluster'),
-                       suffix = c('_pos', '_neg')) %>%
-      summarize(s = sum(s_pos * s_neg) * n_cluster_tot / (n_cluster_tot - 1)) %>%
-      as.numeric
-
-    rm(s_values, s_cross)
-
-    out$var[test_i] <- s_10 / n_pos + s_01 / n_neg + 2 * s_11 / n_pos / n_neg
+      out$var[test_i] <- sum(s_values$s)
 
 
+    } else{
 
-    # --- retain v_10 & v_01 values for covariance calculation if necessary
+      v_values <- dta_i %>%
+        group_by(status, cluster) %>%
+        summarize(cnt = n(),
+                  kern_sum = sum(kern_sum)) %>%
+        ungroup %>%
+        mutate(v = ifelse(status == T,
+                          kern_sum / n_neg,
+                          kern_sum / n_pos))
+
+      s_values <- v_values %>%
+        group_by(status) %>%
+        summarize(s = sum( (v - cnt * auc) ^ 2))  %>%
+        ungroup %>%
+        mutate(s = ifelse(status == T,
+                          n_cluster_pos * s / (n_cluster_pos - 1) / n_pos / n_pos,
+                          n_cluster_neg * s / (n_cluster_neg - 1) / n_neg / n_neg))
+
+      s_cross <- v_values %>%
+        mutate(s = v - cnt * auc)
+
+      s_11 <- inner_join(select(filter(s_cross, status == T), cluster, s),
+                         select(filter(s_cross, status == F), cluster, s),
+                         by = 'cluster',
+                         suffix = c('_pos', '_neg')) %>%
+        summarize(s = sum(s_pos * s_neg) * n_cluster_tot / (n_cluster_tot - 1)) %>%
+        as.numeric
+
+      out$var[test_i] <- sum(s_values$s) + 2 * s_11 / n_pos / n_neg
+
+      rm(s_values, s_cross)
+
+    }
+
+    # retain values for covariance calculation
     if(n_test == 2){
-      if(test_i == 1){
-        v_values_1 <- v_values
-      } else {
+      if(test_i == 1) v_values_1 <- v_values else
         v_values_2 <- v_values
-      }
     }
   }
 
 
+  # -- covariance between auc estimates
   if(n_test == 2){
+    if(is.null(cluster)){
 
-    # ----- covariance between auc estimates -----
+      v_values_1 <- v_values_1 %>%
+        mutate(val_auc_1 = v - out$auc[1],
+               val_auc_2 = v - out$auc[2])
 
-    v_values_1 <- v_values_1 %>%
-      mutate(val_auc_1 = v - cnt * out$auc[1],
-             val_auc_2 = v - cnt * out$auc[2])
+      v_values_2 <- v_values_2 %>%
+        mutate(val_auc_1 = v - out$auc[1],
+               val_auc_2 = v - out$auc[2])
 
-    v_values_2 <- v_values_2 %>%
-      mutate(val_auc_1 = v - cnt * out$auc[1],
-             val_auc_2 = v - cnt * out$auc[2])
+      s_10_12 <- 1 / (n_pos - 1) *
+        sum(select(filter(v_values_1, status == T), val_auc_1) *
+              select(filter(v_values_2, status == T), val_auc_2))
+
+      s_01_12 <- 1 / (n_neg - 1) *
+        sum(select(filter(v_values_1, status == F), val_auc_1) *
+              select(filter(v_values_2, status == F), val_auc_2))
+
+      cov_auc <- s_10_12 / n_pos + s_01_12 / n_neg
+
+    } else{
+
+      v_values_1 <- v_values_1 %>%
+        mutate(val_auc_1 = v - cnt * out$auc[1],
+               val_auc_2 = v - cnt * out$auc[2])
+
+      v_values_2 <- v_values_2 %>%
+        mutate(val_auc_1 = v - cnt * out$auc[1],
+               val_auc_2 = v - cnt * out$auc[2])
+
+      s_10_12 <- n_cluster_pos / ((n_cluster_pos - 1) * n_pos) *
+        sum(select(filter(v_values_1, status == T), val_auc_1)  *
+              select(filter(v_values_2, status == T), val_auc_2))
+
+      s_01_12 <- n_cluster_neg / ((n_cluster_neg - 1) *  n_neg) *
+        sum(select(filter(v_values_1, status == F), val_auc_1) *
+              select(filter(v_values_2, status == F), val_auc_2))
+
+      s_11_12 <- n_cluster_tot / (n_cluster_tot - 1) *
+        inner_join(select(filter(v_values_1, status == T), cluster, val_auc_1),
+                   select(filter(v_values_2, status == F), cluster, val_auc_2),
+                   by = 'cluster') %>%
+        summarize(sum(val_auc_1 * val_auc_2)) %>%
+        as.numeric
+
+      s_11_21 <- n_cluster_tot / (n_cluster_tot - 1) *
+        inner_join(select(filter(v_values_2, status == T), cluster, val_auc_2),
+                   select(filter(v_values_1, status == F), cluster, val_auc_1),
+                   by = 'cluster') %>%
+        summarize(sum(val_auc_1 * val_auc_2)) %>%
+        as.numeric
+
+      cov_auc <- s_10_12 / n_pos + s_01_12 / n_neg + (s_11_12 + s_11_21) / n_pos / n_neg
+
+    }
 
 
-    s_10_12 <- n_cluster_pos / ((n_cluster_pos - 1) * n_pos) *
-      sum(select(filter(v_values_1, status == T), val_auc_1)  *
-            select(filter(v_values_2, status == T), val_auc_2))
+    test_stat <- abs(out$auc[1] - out$auc[2]) / sqrt(sum(out$var) - 2 * cov_auc)
+    p_value <- 2 * pnorm(test_stat, lower.tail = F)
 
-    s_01_12 <- n_cluster_neg / ((n_cluster_neg - 1) *  n_neg) *
-      sum(select(filter(v_values_1, status == F), val_auc_1) *
-            select(filter(v_values_2, status == F), val_auc_2))
-
-    s_11_12 <- n_cluster_tot / (n_cluster_tot - 1) *
-      inner_join(select(filter(v_values_1, status == T), cluster, val_auc_1),
-                 select(filter(v_values_2, status == F), cluster, val_auc_2),
-                 by = 'cluster') %>%
-      summarize(sum(val_auc_1 * val_auc_2)) %>%
-      as.numeric
-
-    s_11_21 <- n_cluster_tot / (n_cluster_tot - 1) *
-      inner_join(select(filter(v_values_2, status == T), cluster, val_auc_2),
-                 select(filter(v_values_1, status == F), cluster, val_auc_1),
-                 by = 'cluster') %>%
-      summarize(sum(val_auc_1 * val_auc_2)) %>%
-      as.numeric
-
-    cov.auc <- s_10_12 / n_pos + s_01_12 / n_neg + (s_11_12 + s_11_21) / n_pos / n_neg
-
-    test.stat <- abs(out$auc[1] - out$auc[2]) / sqrt(sum(out$var) - 2 * cov.auc)
-    p.value <- 2 * pnorm(test.stat, lower.tail = F)
-
-    out.return <- list(auc = out$auc,
+    out_return <- list(auc = out$auc,
                        var = matrix(c(out$var[1],
-                                      rep(cov.auc, 2),
+                                      rep(cov_auc, 2),
                                       out$var[2]),
                                     nrow = 2),
-                       test_stat = test.stat,
-                       p_value = p.value)
+                       test_stat = test_stat,
+                     p_value = p_value)
 
-    return(out.return)
+    return(out_return)
 
   } else return(list(auc = out$auc, var = out$var))
 
